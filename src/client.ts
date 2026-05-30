@@ -575,8 +575,8 @@ export class CoralSwapClient {
       sourceKey,
       enhanced: isEnhanced,
     });
-    const account = await this.withRetry(
-      () => this.server.getAccount(sourceKey),
+    const account = await this.executeWithFallback(
+      (server) => server.getAccount(sourceKey),
       'simulateTransaction_getAccount',
     );
 
@@ -596,8 +596,8 @@ export class CoralSwapClient {
       operationCount: operations.length,
       enhanced: isEnhanced,
     });
-    const sim = await this.withRetry(
-      () => this.server.simulateTransaction(tx),
+    const sim = await this.executeWithFallback(
+      (server) => server.simulateTransaction(tx),
       'simulateTransaction_simulate',
     );
     this.logger?.debug('simulateTransaction (dry-run): completed', {
