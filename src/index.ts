@@ -36,6 +36,7 @@ export {
   NetworkConfig,
   NETWORK_CONFIGS,
   DEFAULTS,
+  DEFAULT_SLIPPAGE,
   PRECISION,
 } from "@/config";
 
@@ -63,7 +64,9 @@ export {
   FeeModule,
   OracleModule,
   TokenListModule,
+  RouterModule,
 } from "@/modules";
+export type { OptimalPath } from "@/modules/router";
 export type { TWAPObservation, TWAPResult } from "@/modules";
 
 // Utilities
@@ -72,6 +75,7 @@ export {
   parseTokenAmount,
   fromSorobanAmount,
   formatAmount,
+  formatLargeNumber,
   toBps,
   applyBps,
   percentDiff,
@@ -83,6 +87,8 @@ export {
   isValidContractId,
   isValidAddress,
   isNativeToken,
+  getNativeAssetContractAddress,
+  resolveTokenIdentifier,
   sortTokens,
   truncateAddress,
   toScAddress,
@@ -91,6 +97,8 @@ export {
   getSimulationReturnValue,
   getResourceEstimate,
   exceedsBudget,
+  decodeDiagnosticEvents,
+  buildSimulationResult,
   withRetry,
   isRetryable,
   sleep,
@@ -99,12 +107,21 @@ export {
   validateNonNegativeAmount,
   validateSlippage,
   validateDistinctTokens,
-} from "@/utils";
+
+  isValidPath,
+  EventParser,
+  EVENT_TOPICS,
+  decodeEvents,
+  decodeEventsFromXdr,
+} from './utils';
+
 
 export type {
   RetryConfig,
   SimulationResult,
   SimulationResourceEstimate,
+  WaitNextLedgerOptions,
+  DecodeEventsOptions,
 } from "./utils";
 
 // Errors

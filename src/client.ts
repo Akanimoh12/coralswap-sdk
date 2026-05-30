@@ -1,20 +1,23 @@
 import {
-  Keypair,
   SorobanRpc,
   TransactionBuilder,
   Transaction,
   xdr,
 } from '@stellar/stellar-sdk';
 import { CoralSwapConfig, NetworkConfig, NETWORK_CONFIGS, DEFAULTS } from '@/config';
-import { Network, Result, Logger, Signer } from '@/types/common';
+import { Network, Result, Logger, Signer, SimulateTransactionOptions, SimulateTransactionResult } from '@/types/common';
 import { SignerError } from '@/errors';
 import { FactoryClient } from '@/contracts/factory';
 import { PairClient } from '@/contracts/pair';
 import { RouterClient } from '@/contracts/router';
 import { LPTokenClient } from '@/contracts/lp-token';
 import { TokenListModule } from '@/modules/tokens';
+import { FactoryModule } from '@/modules/factory';
 import { KeypairSigner } from '@/utils/signer';
-export { KeypairSigner };
+import { TransactionPoller, PollingStrategy, PollingOptions } from '@/utils/polling';
+import { buildSimulationResult } from '@/utils/simulation';
+import { withRetry, RetryOptions } from '@/utils/retry';
+export { KeypairSigner, PollingStrategy, PollingOptions };
 
 /**
  * Default signer implementation that wraps a Stellar Keypair.
@@ -33,13 +36,97 @@ export class CoralSwapClient {
   network: Network;
   config: CoralSwapConfig;
   networkConfig: NetworkConfig;
-  server: SorobanRpc.Server;
-
+  private _server: SorobanRpc.Server;
+  private _rpcUrls: string[] = [];
+  private _currentRpcIndex: number = 0;
   private signer: Signer | null = null;
   private _publicKeyCache: string | null = null;
   private _factory: FactoryClient | null = null;
   private _router: RouterClient | null = null;
+  private _factoryModule: FactoryModule | null = null;
+  private _poller: TransactionPoller | null = null;
   private readonly logger?: Logger;
+
+  /**
+   * Helper to execute an async RPC function with exponential backoff retry
+   * and automatic fallback to alternative RPC endpoints if configured.
+   *
+   * @param fn - The async function to execute. Receives the current server instance.
+   * @param label - A label for logging purposes
+   * @returns The result of the function
+   * @private
+   */
+  private async executeWithFallback<T>(
+    fn: (server: SorobanRpc.Server) => Promise<T>,
+    label: string,
+  ): Promise<T> {
+    const options: RetryOptions = {
+      maxRetries: this.config.maxRetries ?? DEFAULTS.maxRetries,
+      retryDelayMs: this.config.retryDelayMs ?? DEFAULTS.retryDelayMs,
+      maxRetryDelayMs: this.config.maxRetryDelayMs ?? DEFAULTS.maxRetryDelayMs,
+    };
+
+    let lastError: any;
+    const initialIndex = this._currentRpcIndex;
+
+    // We try each RPC URL at least once if needed
+    for (let i = 0; i < this._rpcUrls.length; i++) {
+      try {
+        return await withRetry(
+          () => fn(this.server),
+          options,
+          this.logger,
+          `${label}[RPC:${this._currentRpcIndex}]`,
+        );
+      } catch (err) {
+        lastError = err;
+        this.logger?.info(`executeWithFallback: RPC call failed, trying fallback`, {
+          label,
+          url: this._rpcUrls[this._currentRpcIndex],
+          error: err instanceof Error ? err.message : err,
+        });
+
+        if (this._rpcUrls.length > 1) {
+          this.rotateRpcServer();
+          // If we've circled back to the initial index, we've tried all URLs
+          if (this._currentRpcIndex === initialIndex) break;
+        } else {
+          break;
+        }
+      }
+    }
+
+    throw lastError;
+  }
+
+  /**
+   * Get the current Soroban RPC server instance.
+   */
+  get server(): SorobanRpc.Server {
+    return this._server;
+  }
+
+  /**
+   * Rotate to the next available RPC server in the fallback list.
+   * @private
+   */
+  private rotateRpcServer(): void {
+    if (this._rpcUrls.length <= 1) return;
+    this._currentRpcIndex = (this._currentRpcIndex + 1) % this._rpcUrls.length;
+    this._server = this.createRpcServer(this._rpcUrls[this._currentRpcIndex]);
+  }
+
+  /**
+   * Create a new SorobanRpc.Server instance with custom options.
+   * @private
+   */
+  private createRpcServer(url: string): SorobanRpc.Server {
+    const options: any = {
+      headers: this.config.rpcHeaders,
+      ...this.config.fetchOptions,
+    };
+    return new SorobanRpc.Server(url, options);
+  }
 
   /**
    * Create a new CoralSwapClient.
@@ -47,6 +134,11 @@ export class CoralSwapClient {
    * @param config - SDK configuration. Provide `secretKey` for the built-in
    *   KeypairSigner, or pass a `signer` implementing the {@link Signer}
    *   interface for external wallets (Freighter, Albedo, etc.).
+   * @example
+   * const client = new CoralSwapClient({
+   *   network: Network.TESTNET,
+   *   secretKey: 'S...',
+   * });
    */
   constructor(config: CoralSwapConfig) {
     this.config = {
@@ -60,10 +152,17 @@ export class CoralSwapClient {
     this.network = config.network;
     this.networkConfig = {
       ...NETWORK_CONFIGS[config.network],
-      ...(config.rpcUrl ? { rpcUrl: config.rpcUrl } : {}),
     };
 
-    this.server = new SorobanRpc.Server(this.networkConfig.rpcUrl);
+    // Handle custom RPC URL(s)
+    if (config.rpcUrl) {
+      this._rpcUrls = Array.isArray(config.rpcUrl) ? config.rpcUrl : [config.rpcUrl];
+    } else {
+      this._rpcUrls = [this.networkConfig.rpcUrl];
+    }
+
+    this._currentRpcIndex = 0;
+    this._server = this.createRpcServer(this._rpcUrls[0]);
 
     if (config.signer) {
       this.signer = config.signer;
@@ -77,6 +176,20 @@ export class CoralSwapClient {
     }
 
     this.logger = config.logger;
+  }
+
+  /**
+   * Get the transaction poller instance.
+   */
+  poller(): TransactionPoller {
+    if (!this._poller) {
+      // Use a proxy or wrapper if we want the poller to always use the current server
+      // For now, we'll just ensure it's re-created or updated if needed.
+      // But actually, TransactionPoller is created once.
+      // I'll modify TransactionPoller to accept the client or a server provider.
+      this._poller = new TransactionPoller(this.server, this.logger);
+    }
+    return this._poller;
   }
 
   /**
@@ -120,8 +233,10 @@ export class CoralSwapClient {
       }
       this._factory = new FactoryClient(
         this.networkConfig.factoryAddress,
-        this.networkConfig.rpcUrl,
+        this.server,
         this.networkConfig.networkPassphrase,
+        this.getRetryOptions(),
+        this.logger,
       );
     }
     return this._factory;
@@ -137,8 +252,10 @@ export class CoralSwapClient {
       }
       this._router = new RouterClient(
         this.networkConfig.routerAddress,
-        this.networkConfig.rpcUrl,
+        this.server,
         this.networkConfig.networkPassphrase,
+        this.getRetryOptions(),
+        this.logger,
       );
     }
     return this._router;
@@ -148,10 +265,14 @@ export class CoralSwapClient {
    * Create a PairClient for a specific pair contract address.
    */
   pair(pairAddress: string): PairClient {
+    const sourceAccount = this._publicKeyCache ?? this.config.publicKey;
     return new PairClient(
       pairAddress,
-      this.networkConfig.rpcUrl,
+      this.server,
       this.networkConfig.networkPassphrase,
+      this.getRetryOptions(),
+      this.logger,
+      sourceAccount,
     );
   }
 
@@ -160,30 +281,46 @@ export class CoralSwapClient {
    *
    * @param network - The target network.
    * @param rpcUrl - Optional override for the RPC URL.
+   * @example
+   * client.setNetwork(Network.MAINNET);
    */
   setNetwork(network: Network, rpcUrl?: string): void {
     this.network = network;
     this.networkConfig = {
       ...NETWORK_CONFIGS[network],
-      ...(rpcUrl ? { rpcUrl } : {}),
     };
 
-    this.server = new SorobanRpc.Server(this.networkConfig.rpcUrl);
+    if (rpcUrl) {
+      this._rpcUrls = Array.isArray(rpcUrl) ? rpcUrl : [rpcUrl];
+    } else {
+      this._rpcUrls = [this.networkConfig.rpcUrl];
+    }
+
+    this._currentRpcIndex = 0;
+    this._server = this.createRpcServer(this._rpcUrls[0]);
 
     // Reset contract client singletons to trigger re-initialization
     this._factory = null;
     this._router = null;
 
+    // Reset factory module cache
+    if (this._factoryModule) {
+      this._factoryModule.clearCache();
+    }
+
     // Refresh signer if using built-in KeypairSigner
     if (this.config.secretKey) {
-      const kpSigner = new KeypairSigner(this.config.secretKey, this.networkConfig.networkPassphrase);
+      const kpSigner = new KeypairSigner(
+        this.config.secretKey,
+        this.networkConfig.networkPassphrase,
+      );
       this.signer = kpSigner;
       this._publicKeyCache = kpSigner.publicKeySync;
     }
 
-    this.logger?.info('setNetwork: network switched', {
+    this.logger?.info("setNetwork: network switched", {
       network: this.network,
-      rpcUrl: this.networkConfig.rpcUrl,
+      rpcUrl: (this.networkConfig as any).rpcUrl,
     });
   }
 
@@ -193,8 +330,10 @@ export class CoralSwapClient {
   lpToken(lpTokenAddress: string): LPTokenClient {
     return new LPTokenClient(
       lpTokenAddress,
-      this.networkConfig.rpcUrl,
+      this.server,
       this.networkConfig.networkPassphrase,
+      this.getRetryOptions(),
+      this.logger,
     );
   }
 
@@ -206,14 +345,30 @@ export class CoralSwapClient {
   }
 
   /**
+   * Access the Factory module (cached lookups).
+   */
+  factoryModule(): FactoryModule {
+    if (!this._factoryModule) {
+      this._factoryModule = new FactoryModule(this);
+    }
+    return this._factoryModule;
+  }
+
+  /**
    * Lookup the pair address for a token pair via the factory.
    */
   async getPairAddress(tokenA: string, tokenB: string): Promise<string | null> {
-    return this.factory.getPair(tokenA, tokenB);
+    return this.factoryModule().getPairAddress(tokenA, tokenB);
   }
 
   /**
    * Build, simulate, sign and submit a transaction.
+   *
+   * @param operations - Array of Soroban operations to include
+   * @param source - Optional source account override
+   * @returns Resolves with transaction hash and ledger or an error
+   * @example
+   * const result = await client.submitTransaction([op]);
    */
   async submitTransaction(
     operations: xdr.Operation[],
@@ -223,7 +378,10 @@ export class CoralSwapClient {
       const sourceKey = source ?? (await this.resolvePublicKey());
 
       this.logger?.debug("getAccount: fetching account", { sourceKey });
-      const account = await this.server.getAccount(sourceKey);
+      const account = await this.executeWithFallback(
+        (server) => server.getAccount(sourceKey),
+        "getAccount",
+      );
       this.logger?.debug("getAccount: success", { sourceKey });
 
       let builder = new TransactionBuilder(account, {
@@ -241,7 +399,10 @@ export class CoralSwapClient {
         sourceKey,
         operationCount: operations.length,
       });
-      const sim = await this.server.simulateTransaction(tx);
+      const sim = await this.executeWithFallback(
+        (server) => server.simulateTransaction(tx),
+        "simulateTransaction",
+      );
       if (!SorobanRpc.Api.isSimulationSuccess(sim)) {
         this.logger?.error("simulateTransaction: simulation failed", {
           simulation: sim,
@@ -276,7 +437,10 @@ export class CoralSwapClient {
         this.networkConfig.networkPassphrase,
       );
 
-      const response = await this.server.sendTransaction(signedTx);
+      const response = await this.executeWithFallback(
+        (server) => server.sendTransaction(signedTx),
+        "sendTransaction",
+      );
 
       if (response.status === "ERROR") {
         this.logger?.error("sendTransaction: submission failed", { response });
@@ -309,86 +473,115 @@ export class CoralSwapClient {
   }
 
   /**
-   * Poll for transaction completion with configurable retries.
+   * Poll for transaction confirmation using the customized poller.
    */
   private async pollTransaction(
     txHash: string,
   ): Promise<Result<{ txHash: string; ledger: number }>> {
-    const maxRetries = this.config.maxRetries ?? DEFAULTS.maxRetries;
-    const retryDelay = this.config.retryDelayMs ?? DEFAULTS.retryDelayMs;
-
-    for (let attempt = 0; attempt < maxRetries * 10; attempt++) {
-      this.logger?.debug("pollTransaction: polling attempt", {
-        txHash,
-        attempt: attempt + 1,
-        maxAttempts: maxRetries * 10,
-      });
-      const status = await this.server.getTransaction(txHash);
-
-      if (status.status === "SUCCESS") {
-        this.logger?.info("pollTransaction: confirmed", {
-          txHash,
-          ledger: status.ledger,
-        });
-        return {
-          success: true,
-          data: {
-            txHash,
-            ledger: status.ledger ?? 0,
-          },
-          txHash,
-        };
-      }
-
-      if (status.status === "FAILED") {
-        this.logger?.error("pollTransaction: transaction failed on-chain", {
-          txHash,
-          status,
-        });
-        return {
-          success: false,
-          error: {
-            code: "TX_FAILED",
-            message: "Transaction failed on-chain",
-            details: { status },
-          },
-          txHash,
-        };
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, retryDelay));
-    }
-
-    this.logger?.error("pollTransaction: timed out", {
-      txHash,
-      attempts: maxRetries * 10,
+    return this.poller().poll(txHash, {
+      strategy: this.config.pollingStrategy ?? DEFAULTS.pollingStrategy,
+      interval: this.config.pollingIntervalMs ?? DEFAULTS.pollingIntervalMs,
+      maxAttempts: this.config.maxPollingAttempts ?? DEFAULTS.maxPollingAttempts,
+      backoffFactor: this.config.pollingBackoffFactor ?? DEFAULTS.pollingBackoffFactor,
+      maxInterval: this.config.maxPollingIntervalMs ?? DEFAULTS.maxPollingIntervalMs,
     });
-    return {
-      success: false,
-      error: {
-        code: "TX_TIMEOUT",
-        message: `Transaction polling timed out after ${maxRetries * 10} attempts`,
-      },
-      txHash,
-    };
   }
 
   /**
    * Simulate a transaction without submitting (dry-run).
+   *
+   * **Legacy form** — returns the raw `SorobanRpc.Api.SimulateTransactionResponse`
+   * for backward compatibility.
+   *
+   * @param operations - Array of operations to simulate
+   * @param source - Optional source account public key override
+   * @returns Raw simulation response from the RPC
+   * @example
+   * const sim = await client.simulateTransaction([op]);
+   * if (SorobanRpc.Api.isSimulationSuccess(sim)) { ... }
    */
   async simulateTransaction(
     operations: xdr.Operation[],
     source?: string,
-  ): Promise<SorobanRpc.Api.SimulateTransactionResponse> {
+  ): Promise<SorobanRpc.Api.SimulateTransactionResponse>;
+
+  /**
+   * Simulate a transaction without submitting (enhanced dry-run).
+   *
+   * **Enhanced form** — pass a {@link SimulateTransactionOptions} object as
+   * the second argument to receive a fully-typed {@link SimulateTransactionResult}
+   * with decoded events, auth entries, resource estimates, and the raw response.
+   *
+   * @param operations - Array of operations to simulate
+   * @param options - Simulation environment options (source account, timeout, fee)
+   * @returns Typed `SimulateTransactionResult` with all relevant simulation data
+   *
+   * @example
+   * // Basic enhanced dry-run using the configured signer's account
+   * const result = await client.simulateTransaction([op], {});
+   * if (result.success) {
+   *   console.log('Return value:', result.returnValue);
+   *   console.log('CPU instructions:', result.cost?.cpuInsns);
+   *   console.log('Min resource fee:', result.minResourceFee);
+   *   console.log('Events emitted:', result.events.length);
+   * }
+   *
+   * @example
+   * // Debug a contract call as a custom source account
+   * const result = await client.simulateTransaction([op], {
+   *   source: 'GABC...XYZ',
+   *   timeoutSec: 60,
+   * });
+   * if (!result.success) {
+   *   console.error('Simulation failed:', result.error);
+   * }
+   *
+   * @example
+   * // Inspect authorization entries before signing
+   * const result = await client.simulateTransaction([op], {});
+   * console.log('Auth required:', result.auth.length);
+   */
+  async simulateTransaction(
+    operations: xdr.Operation[],
+    options: SimulateTransactionOptions,
+  ): Promise<SimulateTransactionResult>;
+
+  // Unified implementation — handles both call forms.
+  async simulateTransaction(
+    operations: xdr.Operation[],
+    sourceOrOptions?: string | SimulateTransactionOptions,
+  ): Promise<SorobanRpc.Api.SimulateTransactionResponse | SimulateTransactionResult> {
+    // Distinguish enhanced form (options object) from legacy form (string or undefined).
+    const isEnhanced =
+      sourceOrOptions !== undefined && typeof sourceOrOptions !== 'string';
+
+    const source =
+      typeof sourceOrOptions === 'string'
+        ? sourceOrOptions
+        : (sourceOrOptions as SimulateTransactionOptions | undefined)?.source;
+
+    const timeoutSec = isEnhanced
+      ? ((sourceOrOptions as SimulateTransactionOptions).timeoutSec ??
+          this.networkConfig.sorobanTimeout)
+      : 30; // preserve the original hardcoded value for the legacy path
+
+    const fee = isEnhanced
+      ? ((sourceOrOptions as SimulateTransactionOptions).fee ?? '100')
+      : '100';
+
     const sourceKey = source ?? this.publicKey;
 
-    this.logger?.debug("simulateTransaction (dry-run): fetching account", {
+    this.logger?.debug('simulateTransaction (dry-run): fetching account', {
       sourceKey,
+      enhanced: isEnhanced,
     });
-    const account = await this.server.getAccount(sourceKey);
+    const account = await this.withRetry(
+      () => this.server.getAccount(sourceKey),
+      'simulateTransaction_getAccount',
+    );
 
     let builder = new TransactionBuilder(account, {
-      fee: "100",
+      fee,
       networkPassphrase: this.networkConfig.networkPassphrase,
     });
 
@@ -396,14 +589,25 @@ export class CoralSwapClient {
       builder = builder.addOperation(op);
     }
 
-    const tx = builder.setTimeout(30).build();
+    const tx = builder.setTimeout(timeoutSec).build();
 
-    this.logger?.debug("simulateTransaction (dry-run): simulating", {
+    this.logger?.debug('simulateTransaction (dry-run): simulating', {
       sourceKey,
       operationCount: operations.length,
+      enhanced: isEnhanced,
     });
-    const sim = await this.server.simulateTransaction(tx);
-    this.logger?.debug("simulateTransaction (dry-run): completed");
+    const sim = await this.withRetry(
+      () => this.server.simulateTransaction(tx),
+      'simulateTransaction_simulate',
+    );
+    this.logger?.debug('simulateTransaction (dry-run): completed', {
+      success: SorobanRpc.Api.isSimulationSuccess(sim),
+      enhanced: isEnhanced,
+    });
+
+    if (isEnhanced) {
+      return buildSimulationResult(sim);
+    }
     return sim;
   }
 
@@ -421,7 +625,10 @@ export class CoralSwapClient {
    */
   async isHealthy(): Promise<boolean> {
     try {
-      const health = await this.server.getHealth();
+      const health = await this.executeWithFallback(
+        (server) => server.getHealth(),
+        "getHealth",
+      );
       return health.status === "healthy";
     } catch {
       return false;
@@ -432,7 +639,21 @@ export class CoralSwapClient {
    * Get the current ledger number from the RPC.
    */
   async getCurrentLedger(): Promise<number> {
-    const info = await this.server.getLatestLedger();
+    const info = await this.executeWithFallback(
+      (server) => server.getLatestLedger(),
+      "getLatestLedger",
+    );
     return info.sequence;
+  }
+
+  /**
+   * Internal helper to get structured retry options.
+   */
+  private getRetryOptions(): RetryOptions {
+    return {
+      maxRetries: this.config.maxRetries ?? DEFAULTS.maxRetries,
+      retryDelayMs: this.config.retryDelayMs ?? DEFAULTS.retryDelayMs,
+      maxRetryDelayMs: this.config.maxRetryDelayMs ?? DEFAULTS.maxRetryDelayMs,
+    };
   }
 }
