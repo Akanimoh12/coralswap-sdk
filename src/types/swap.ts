@@ -50,6 +50,32 @@ export interface SwapHistoryEvent {
 }
 
 /**
+ * Result returned by simulateSwap() — a contract-backed dry-run quote.
+ *
+ * All values are computed from live on-chain reserve state, so the
+ * returned `amountOut` matches what an actual swap would produce for
+ * the same block.
+ */
+export interface SwapSimulationResult {
+  /** Expected output amount in the output token's smallest unit. */
+  amountOut: bigint;
+  /** Price impact of the trade in basis points (1 bps = 0.01%). */
+  priceImpactBps: number;
+  /** Fee deducted from the input amount (in input token units). */
+  feeAmount: bigint;
+  /**
+   * Execution price expressed as a Fraction: amountOut / amountIn.
+   * Stored as { numerator, denominator } to avoid floating-point loss.
+   */
+  executionPrice: { numerator: bigint; denominator: bigint };
+  /**
+   * Optional warning attached when the trade has significant market impact.
+   * Currently only `'HIGH_PRICE_IMPACT'` (priceImpactBps > 500).
+   */
+  warning?: 'HIGH_PRICE_IMPACT';
+}
+
+/**
  * Swap request parameters.
  *
  * If `path` is provided with 3+ tokens, the swap is routed through

@@ -106,10 +106,6 @@ export class CoralSwapClient {
     return this._server;
   }
 
-  set server(server: SorobanRpc.Server) {
-    this._server = server;
-  }
-
   /**
    * Replace the internal RPC server instance.
    *

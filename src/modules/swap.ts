@@ -10,6 +10,7 @@ import {
   MultiHopSwapQuote,
   SwapHistoryFilter,
   SwapHistoryEvent,
+  SwapSimulationResult,
 } from "@/types/swap";
 import { GasEstimate } from "@/types/gas";
 import { SwapEvent } from "@/types/events";
@@ -293,6 +294,111 @@ export class SwapModule {
       ledger: result.data!.ledger,
       timestamp: Math.floor(Date.now() / 1000),
     };
+  }
+
+  /**
+   * Dry-run a swap against live on-chain reserve state without submitting a transaction.
+   *
+   * Reads the current reserves and dynamic fee from the pair contract via
+   * `simulateRead` (no transaction, no gas), then applies the standard
+   * Uniswap V2 AMM formula to compute the exact output that an actual swap
+   * would produce for the same block state.
+   *
+   * A `HIGH_PRICE_IMPACT` warning is attached when `priceImpactBps > 500`
+   * (i.e. the trade moves the price by more than 5%).
+   *
+   * @param tokenIn - Contract address of the input token.
+   * @param tokenOut - Contract address of the output token.
+   * @param amountIn - Exact input amount (in the token's smallest unit).
+   * @param pairAddress - Optional pair contract address. When omitted the
+   *   factory is queried to resolve the pair for `tokenIn`/`tokenOut`.
+   * @returns A {@link SwapSimulationResult} with `amountOut`, `priceImpactBps`,
+   *   `feeAmount`, `executionPrice`, and an optional `warning`.
+   * @throws {ValidationError} If any address is invalid or `amountIn` is zero.
+   * @throws {PairNotFoundError} If no pair exists for the token combination.
+   * @throws {InsufficientLiquidityError} If the pair has zero reserves.
+   *
+   * @example
+   * const sim = await swap.simulateSwap(
+   *   'CDLZ...', // tokenIn
+   *   'CBQH...', // tokenOut
+   *   1_000_000n,
+   * );
+   * if (sim.warning === 'HIGH_PRICE_IMPACT') {
+   *   console.warn('Large price impact:', sim.priceImpactBps, 'bps');
+   * }
+   * console.log('Expected output:', sim.amountOut);
+   */
+  async simulateSwap(
+    tokenIn: string,
+    tokenOut: string,
+    amountIn: bigint,
+    pairAddress?: string,
+  ): Promise<SwapSimulationResult> {
+    const passphrase = this.client.networkConfig.networkPassphrase;
+    const resolvedTokenIn = resolveTokenIdentifier(tokenIn, passphrase);
+    const resolvedTokenOut = resolveTokenIdentifier(tokenOut, passphrase);
+
+    validateAddress(resolvedTokenIn, 'tokenIn');
+    validateAddress(resolvedTokenOut, 'tokenOut');
+    validateDistinctTokens(resolvedTokenIn, resolvedTokenOut);
+    validatePositiveAmount(amountIn, 'amountIn');
+
+    // Resolve pair address via factory if not provided
+    const resolvedPair =
+      pairAddress ?? (await this.client.getPairAddress(resolvedTokenIn, resolvedTokenOut));
+    if (!resolvedPair) {
+      throw new PairNotFoundError(resolvedTokenIn, resolvedTokenOut);
+    }
+
+    const pair = this.client.pair(resolvedPair);
+
+    // Fetch reserves and fee in parallel — both are read-only contract views
+    const [reserves, feeBps] = await Promise.all([
+      pair.getReserves(),
+      pair.getDynamicFee(),
+    ]);
+
+    const { reserve0, reserve1 } = reserves;
+
+    if (reserve0 === 0n || reserve1 === 0n) {
+      throw new InsufficientLiquidityError(resolvedPair, {
+        tokenIn: resolvedTokenIn,
+        tokenOut: resolvedTokenOut,
+        reserve0: reserve0.toString(),
+        reserve1: reserve1.toString(),
+      });
+    }
+
+    // Determine which reserve corresponds to tokenIn
+    const isToken0In = await this.isToken0(pair, resolvedTokenIn);
+    const reserveIn = isToken0In ? reserve0 : reserve1;
+    const reserveOut = isToken0In ? reserve1 : reserve0;
+
+    // Apply the Uniswap V2 AMM formula with the dynamic fee
+    const amountOut = this.getAmountOut(amountIn, reserveIn, reserveOut, feeBps);
+
+    // Fee deducted from amountIn
+    const feeAmount = (amountIn * BigInt(feeBps)) / PRECISION.BPS_DENOMINATOR;
+
+    // Price impact: how much the trade moves the price relative to spot
+    const priceImpactBps = this.calculatePriceImpact(amountIn, amountOut, reserveIn, reserveOut);
+
+    // Execution price as an exact fraction (amountOut / amountIn)
+    const executionPrice = { numerator: amountOut, denominator: amountIn };
+
+    const result: SwapSimulationResult = {
+      amountOut,
+      priceImpactBps,
+      feeAmount,
+      executionPrice,
+    };
+
+    if (priceImpactBps > 500) {
+      result.warning = 'HIGH_PRICE_IMPACT';
+    }
+
+    return result;
   }
 
   /**
