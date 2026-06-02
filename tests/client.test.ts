@@ -1,8 +1,11 @@
 import { Keypair, SorobanRpc, xdr, Transaction, TransactionBuilder } from '@stellar/stellar-sdk';
 import { CoralSwapClient } from '../src/client';
 import { Network, Signer } from '../src/types/common';
-import { SignerError } from '../src/errors';
-import { DEFAULTS } from '../src/config';
+import { ConfigurationError, SignerError } from '../src/errors';
+import { DEFAULTS, NETWORK_CONFIGS } from '../src/config';
+
+const TEST_FACTORY_ADDRESS = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+const TEST_ROUTER_ADDRESS = 'CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 
 // Mock transaction for testing
 const mockTx = {
@@ -49,6 +52,15 @@ jest.mock('@stellar/stellar-sdk', () => {
 describe('CoralSwapClient', () => {
   const TEST_SECRET = 'SB6K2AINTGNYBFX4M7TRPGSKQ5RKNOXXWB7UZUHRYOVTM7REDUGECKZU';
   const TEST_PUBLIC = Keypair.fromSecret(TEST_SECRET).publicKey();
+
+  beforeEach(() => {
+    NETWORK_CONFIGS[Network.TESTNET].factoryAddress = TEST_FACTORY_ADDRESS;
+    NETWORK_CONFIGS[Network.TESTNET].routerAddress = TEST_ROUTER_ADDRESS;
+    NETWORK_CONFIGS[Network.MAINNET].factoryAddress = TEST_FACTORY_ADDRESS;
+    NETWORK_CONFIGS[Network.MAINNET].routerAddress = TEST_ROUTER_ADDRESS;
+    NETWORK_CONFIGS[Network.STAGING].factoryAddress = TEST_FACTORY_ADDRESS;
+    NETWORK_CONFIGS[Network.STAGING].routerAddress = TEST_ROUTER_ADDRESS;
+  });
 
   describe('Constructor', () => {
     it('creates client with valid testnet config', () => {
@@ -110,6 +122,47 @@ describe('CoralSwapClient', () => {
       expect(client.config.defaultDeadlineSec).toBe(600);
       expect(client.config.maxRetries).toBe(5);
       expect(client.config.retryDelayMs).toBe(2000);
+    });
+
+    it('throws ConfigurationError for empty factoryAddress on initialization', () => {
+      NETWORK_CONFIGS[Network.TESTNET].factoryAddress = '';
+
+      expect(() => new CoralSwapClient({
+        network: Network.TESTNET,
+        secretKey: TEST_SECRET,
+      })).toThrow(ConfigurationError);
+
+      expect(() => new CoralSwapClient({
+        network: Network.TESTNET,
+        secretKey: TEST_SECRET,
+      })).toThrow(/factoryAddress/);
+    });
+
+    it('throws ConfigurationError with invalid routerAddress value on initialization', () => {
+      NETWORK_CONFIGS[Network.TESTNET].routerAddress = 'not-a-stellar-address';
+
+      expect(() => new CoralSwapClient({
+        network: Network.TESTNET,
+        secretKey: TEST_SECRET,
+      })).toThrow(ConfigurationError);
+
+      expect(() => new CoralSwapClient({
+        network: Network.TESTNET,
+        secretKey: TEST_SECRET,
+      })).toThrow(/routerAddress.*not-a-stellar-address/);
+    });
+
+    it('trims valid contract addresses during initialization', () => {
+      NETWORK_CONFIGS[Network.TESTNET].factoryAddress = ` ${TEST_FACTORY_ADDRESS} `;
+      NETWORK_CONFIGS[Network.TESTNET].routerAddress = ` ${TEST_ROUTER_ADDRESS} `;
+
+      const client = new CoralSwapClient({
+        network: Network.TESTNET,
+        secretKey: TEST_SECRET,
+      });
+
+      expect(client.networkConfig.factoryAddress).toBe(TEST_FACTORY_ADDRESS);
+      expect(client.networkConfig.routerAddress).toBe(TEST_ROUTER_ADDRESS);
     });
   });
 

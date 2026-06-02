@@ -6,7 +6,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { CoralSwapConfig, NetworkConfig, NETWORK_CONFIGS, DEFAULTS } from '@/config';
 import { Network, Result, Logger, Signer, SimulateTransactionOptions, SimulateTransactionResult } from '@/types/common';
-import { SignerError } from '@/errors';
+import { ConfigurationError, SignerError } from '@/errors';
 import { FactoryClient } from '@/contracts/factory';
 import { PairClient } from '@/contracts/pair';
 import { RouterClient } from '@/contracts/router';
@@ -18,6 +18,28 @@ import { TransactionPoller, PollingStrategy, PollingOptions } from '@/utils/poll
 import { buildSimulationResult } from '@/utils/simulation';
 import { withRetry, RetryOptions } from '@/utils/retry';
 export { KeypairSigner, PollingStrategy, PollingOptions };
+
+function validateContractAddress(fieldName: string, value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new ConfigurationError(
+      fieldName,
+      value,
+      "Address must be a non-empty string",
+    );
+  }
+
+  const trimmed = value.trim();
+
+  if (!/^[GC][A-Z0-9]{55}$/.test(trimmed)) {
+    throw new ConfigurationError(
+      fieldName,
+      value,
+      "Address must be a valid Stellar address starting with G or C and be 56 characters long",
+    );
+  }
+
+  return trimmed;
+}
 
 /**
  * Default signer implementation that wraps a Stellar Keypair.
@@ -166,6 +188,15 @@ export class CoralSwapClient {
       this._rpcUrls = [this.networkConfig.rpcUrl];
     }
 
+    this.networkConfig.factoryAddress = validateContractAddress(
+      "factoryAddress",
+      this.networkConfig.factoryAddress,
+    );
+    this.networkConfig.routerAddress = validateContractAddress(
+      "routerAddress",
+      this.networkConfig.routerAddress,
+    );
+
     this._currentRpcIndex = 0;
     this._server = this.createRpcServer(this._rpcUrls[0]);
 
@@ -297,9 +328,19 @@ export class CoralSwapClient {
 
     if (rpcUrl) {
       this._rpcUrls = Array.isArray(rpcUrl) ? rpcUrl : [rpcUrl];
+      this.networkConfig = { ...this.networkConfig, rpcUrl: this._rpcUrls[0] };
     } else {
       this._rpcUrls = [this.networkConfig.rpcUrl];
     }
+
+    this.networkConfig.factoryAddress = validateContractAddress(
+      "factoryAddress",
+      this.networkConfig.factoryAddress,
+    );
+    this.networkConfig.routerAddress = validateContractAddress(
+      "routerAddress",
+      this.networkConfig.routerAddress,
+    );
 
     this._currentRpcIndex = 0;
     this._server = this.createRpcServer(this._rpcUrls[0]);

@@ -150,6 +150,33 @@ export class ValidationError extends CoralSwapSDKError {
   }
 }
 
+function formatConfigurationValue(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * Invalid SDK configuration values.
+ */
+export class ConfigurationError extends CoralSwapSDKError {
+  constructor(fieldName: string, invalidValue: unknown, reason: string) {
+    const hasDisplayableValue = invalidValue !== undefined;
+    const message = hasDisplayableValue
+      ? `Invalid configuration for ${fieldName}: ${reason}. Received: ${formatConfigurationValue(invalidValue)}`
+      : `Invalid configuration for ${fieldName}: ${reason}`;
+
+    super("CONFIGURATION_ERROR", message, {
+      fieldName,
+      invalidValue,
+      reason,
+    });
+    this.name = "ConfigurationError";
+  }
+}
+
 /**
  * Flash loan specific errors.
  */

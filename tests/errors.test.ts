@@ -10,6 +10,7 @@ import {
   InsufficientLiquidityError,
   CircuitBreakerError,
   ValidationError,
+  ConfigurationError,
   FlashLoanError,
   SignerError,
   mapError,
@@ -27,6 +28,21 @@ describe("Error Hierarchy", () => {
     const err = new NetworkError("connection lost");
     expect(err.code).toBe("NETWORK_ERROR");
     expect(err.name).toBe("NetworkError");
+  });
+
+  it("ConfigurationError includes field name and invalid value", () => {
+    const err = new ConfigurationError(
+      "routerAddress",
+      "invalid",
+      "Address must be valid",
+    );
+
+    expect(err.code).toBe("CONFIGURATION_ERROR");
+    expect(err.name).toBe("ConfigurationError");
+    expect(err.message).toContain("routerAddress");
+    expect(err.message).toContain("invalid");
+    expect(err.details?.fieldName).toBe("routerAddress");
+    expect(err.details?.invalidValue).toBe("invalid");
   });
 
   it("SlippageError includes amounts", () => {
