@@ -1,4 +1,4 @@
-export { SwapModule } from './swap';
+export { SwapModule, calcMinAmountOut, calcMaxAmountIn } from './swap';
 export { LiquidityModule } from './liquidity';
 export { FlashLoanModule } from './flash-loan';
 export { FeeModule } from './fees';

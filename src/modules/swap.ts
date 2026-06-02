@@ -16,6 +16,7 @@ import {
   ValidationError,
   InsufficientLiquidityError,
   PairNotFoundError,
+  SlippageError,
 } from "../errors";
 import {
   validateAddress,
@@ -697,3 +698,68 @@ export class SwapModule {
     return tokens.token0 === tokenIn;
   }
 }
+
+/**
+ * Calculates the minimum output amount for a swap given the input amount,
+ * slippage tolerance in basis points, and current price.
+ *
+ * @param amountIn - The input token amount (in smallest unit, e.g. stroops)
+ * @param slippageBps - The slippage tolerance in basis points (0-5000)
+ * @param price - The price of tokenIn in terms of tokenOut, scaled by PRECISION.PRICE_SCALE (1e14)
+ * @returns The minimum amount of output token expected (in smallest unit)
+ * @throws {SlippageError} If slippageBps is not within the range [0, 5000]
+ * @throws {ValidationError} If price <= 0 or amountIn < 0
+ */
+export function calcMinAmountOut(
+  amountIn: bigint,
+  slippageBps: number,
+  price: bigint,
+): bigint {
+  if (slippageBps < 0 || slippageBps > 5000) {
+    throw new SlippageError(0n, 0n, slippageBps, {
+      message: `Slippage must be between 0 and 5000 bps, got ${slippageBps}`,
+    });
+  }
+  if (price <= 0n) {
+    throw new ValidationError(`price must be greater than 0, got ${price}`);
+  }
+  if (amountIn < 0n) {
+    throw new ValidationError(`amountIn must be non-negative, got ${amountIn}`);
+  }
+
+  const expectedAmountOut = (amountIn * price) / PRECISION.PRICE_SCALE;
+  return expectedAmountOut - (expectedAmountOut * BigInt(slippageBps)) / PRECISION.BPS_DENOMINATOR;
+}
+
+/**
+ * Calculates the maximum input amount for a swap given the target output amount,
+ * slippage tolerance in basis points, and current price.
+ *
+ * @param amountOut - The desired output token amount (in smallest unit, e.g. stroops)
+ * @param slippageBps - The slippage tolerance in basis points (0-5000)
+ * @param price - The price of tokenIn in terms of tokenOut, scaled by PRECISION.PRICE_SCALE (1e14)
+ * @returns The maximum amount of input token required (in smallest unit)
+ * @throws {SlippageError} If slippageBps is not within the range [0, 5000]
+ * @throws {ValidationError} If price <= 0 or amountOut < 0
+ */
+export function calcMaxAmountIn(
+  amountOut: bigint,
+  slippageBps: number,
+  price: bigint,
+): bigint {
+  if (slippageBps < 0 || slippageBps > 5000) {
+    throw new SlippageError(0n, 0n, slippageBps, {
+      message: `Slippage must be between 0 and 5000 bps, got ${slippageBps}`,
+    });
+  }
+  if (price <= 0n) {
+    throw new ValidationError(`price must be greater than 0, got ${price}`);
+  }
+  if (amountOut < 0n) {
+    throw new ValidationError(`amountOut must be non-negative, got ${amountOut}`);
+  }
+
+  const expectedAmountIn = (amountOut * PRECISION.PRICE_SCALE) / price;
+  return expectedAmountIn + (expectedAmountIn * BigInt(slippageBps)) / PRECISION.BPS_DENOMINATOR;
+}
+

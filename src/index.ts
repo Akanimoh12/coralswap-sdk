@@ -62,6 +62,8 @@ export {
 // Feature modules
 export {
   SwapModule,
+  calcMinAmountOut,
+  calcMaxAmountIn,
   LiquidityModule,
   FlashLoanModule,
   FeeModule,
