@@ -264,9 +264,9 @@ export class GovernanceModule {
       return [];
     }
 
-    const raw = scValToNative(sim.returnValue);
-    if (!Array.isArray(raw)) return [];
-    return (raw as xdr.ScVal[]).map((v) => this.decodeProposal(v));
+    const items = sim.returnValue.vec();
+    if (!items) return [];
+    return items.map((v) => this.decodeProposal(v));
   }
 
   /**
@@ -307,10 +307,10 @@ export class GovernanceModule {
       return [];
     }
 
-    const raw = scValToNative(sim.returnValue);
-    if (!Array.isArray(raw)) return [];
+    const items = sim.returnValue.vec();
+    if (!items) return [];
 
-    let proposals = (raw as xdr.ScVal[]).map((v) => this.decodeProposal(v));
+    let proposals = items.map((v) => this.decodeProposal(v));
 
     if (filter?.status) {
       proposals = proposals.filter((p) => p.status === filter.status);
