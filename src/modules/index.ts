@@ -14,3 +14,4 @@ export {
   getDcaOrders,
   getStopLossOrders,
 } from './order-book';
+export { getQuorumStatus } from './governance';
