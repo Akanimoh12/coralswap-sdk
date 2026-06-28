@@ -116,6 +116,9 @@ export {
   EVENT_TOPICS,
   decodeEvents,
   decodeEventsFromXdr,
+  getVotingPower,
+  getVotingPowerAtLedger,
+  setVotingPowerQueryProvider,
 } from './utils';
 
 
@@ -126,6 +129,9 @@ export type {
   WaitNextLedgerOptions,
   DecodeEventsOptions,
   SimulateFn,
+  VotingPower,
+  VotingPowerQueryProvider,
+  VotingPowerQueryResult,
 } from "./utils";
 
 // Errors
