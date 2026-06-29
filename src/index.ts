@@ -72,6 +72,7 @@ export {
   StopLossModule,
   AlertModule,
   LeaderboardModule,
+  WebhookModule,
 } from "@/modules";
 export type { OptimalPath } from "@/modules/router";
 export type { TWAPObservation, TWAPResult, TraderRanking, GetTopTradersOptions } from "@/modules";
@@ -156,5 +157,6 @@ export {
   FlashLoanFailedError,
   CircuitBreakerError,
   SignerError,
+  WebhookError,
   mapError,
 } from "@/errors";
