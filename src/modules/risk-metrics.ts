@@ -1,4 +1,5 @@
 import { CoralSwapClient } from '@/client';
+import { PortfolioModule } from '@/modules/portfolio';
 import {
   PortfolioRisk,
   RiskFactor,
@@ -22,9 +23,11 @@ import { validateAddress } from '@/utils/validation';
  */
 export class RiskMetricsModule {
   private client: CoralSwapClient;
+  private portfolioModule: PortfolioModule;
 
   constructor(client: CoralSwapClient) {
     this.client = client;
+    this.portfolioModule = new PortfolioModule(client);
   }
 
   /**
@@ -48,7 +51,7 @@ export class RiskMetricsModule {
     validateAddress(address, 'address');
 
     const volatilityWindowDays = options.volatilityWindowDays ?? 30;
-    const portfolio = await this.client.portfolio.get(address, {
+    const portfolio = await this.portfolioModule.getPortfolio(address, {
       pairAddresses: options.pairAddresses,
     });
 
