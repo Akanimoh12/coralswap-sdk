@@ -1,4 +1,3 @@
-import { describe, it, expect, beforeEach } from 'vitest';
 import { batchRequest, batchRequestOrThrow, batchCall } from '@/utils/batch-request';
 
 describe('batchRequest with taskTimeoutMs', () => {
