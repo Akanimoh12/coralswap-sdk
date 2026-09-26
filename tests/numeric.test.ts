@@ -55,7 +55,23 @@ describe('decodeI128', () => {
   });
 
   it('handles large hi and lo parts correctly', () => {
-    const hi = BigInt('0xFFFFFFFFFFFFFFFF');
+    // i128 is a signed hi (Int64) plus an unsigned lo (Uint64): hi = -1 with
+    // lo = 2^64 - 1 is the two's-complement encoding of -1, and hi = 2^63 - 1
+    // with lo = 2^64 - 1 is the largest representable value.
+    const negativeOne = xdr.ScVal.scvI128(
+      new xdr.Int128Parts({ hi: xdr.Int64.fromString('-1'), lo: xdr.Uint64.fromString('18446744073709551615') }),
+    );
+    expect(decodeI128(negativeOne)).toBe(-1n);
+
+    const max = xdr.ScVal.scvI128(
+      new xdr.Int128Parts({
+        hi: xdr.Int64.fromString('9223372036854775807'),
+        lo: xdr.Uint64.fromString('18446744073709551615'),
+      }),
+    );
+    expect(decodeI128(max)).toBe((1n << 127n) - 1n);
+
+    const hi = BigInt('0x7FFFFFFFFFFFFFFF');
     const lo = BigInt('0xFFFFFFFFFFFFFFFF');
     const val = xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: xdr.Int64.fromString(hi.toString()), lo: xdr.Uint64.fromString(lo.toString()) }));
     (val.i128 as any) = { hi, lo };

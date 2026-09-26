@@ -63,9 +63,9 @@ export const CONVERSION_SCALE = BigInt(10_000_000);
  * const scaledPrice = price * SCALE.PRICE_SCALE / SCALE.TOKEN_DECIMALS;
  * ```
  */
-export const SCALE = {
+export const SCALE = Object.freeze({
   TOKEN_DECIMALS,
   PRICE_SCALE,
   BPS_DENOMINATOR,
   CONVERSION_SCALE,
-} as const;
+} as const);

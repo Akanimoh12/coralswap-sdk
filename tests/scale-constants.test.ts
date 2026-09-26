@@ -78,10 +78,12 @@ describe('Scale Constants', () => {
     });
 
     it('handles price to token conversion', () => {
+      // 1.00 USD per token, 10 tokens: value = price * tokens / TOKEN_DECIMALS
+      // stays in PRICE_SCALE units, so ten tokens are worth 10 * PRICE_SCALE.
       const pricePerToken = PRICE_SCALE;
       const tokenAmount = 10n * TOKEN_DECIMALS;
       const scaled = (pricePerToken * tokenAmount) / TOKEN_DECIMALS;
-      expect(scaled).toBe(PRICE_SCALE);
+      expect(scaled).toBe(10n * PRICE_SCALE);
     });
   });
 });
